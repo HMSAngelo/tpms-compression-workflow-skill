@@ -1,0 +1,66 @@
+<!-- Former HPS180 case paths below are historical and no longer available after cleanup. Migrated scripts are in ../scripts; case-specific adapters must be retargeted and verified before use. -->
+# Windows TPMS compression workflow
+
+The reference project is `C:\HPS180_Replication_20261106`. Paths to existing scripts and evidence below are relative to that directory. The HPS geometry and inputs are examples; use this workflow for other sheet TPMS families and specimen shapes as well.
+
+## Versions and case record
+
+| Stage | Reference version and interface |
+| --- | --- |
+| CAD, if required | SolidWorks 2026, `34.0.0.5070`; call native COM from Python or PowerShell for supported headless operations. Export STEP or Parasolid with a recorded unit and coordinate system. Skip if nTopology can define the whole specimen. |
+| Specimen and mesh | nTopology 5.9.2, `C:\Program Files\nTopology\nTopology\ntopcl.exe`. |
+| Mesh order and export | HyperMesh 2021.0.0.33, `C:\Program Files\Altair\2021\hwdesktop\hm\bin\win64\hmbatch.exe`. Abaqus/Explicit template `C:\Program Files\Altair\2021\hwdesktop\templates\feoutput\abaqus\explicit`. |
+| Analysis and ODB | Abaqus 2022, `C:\SIMULIA\Commands\abq2022.bat`. Its embedded Python is 2.7.15; use Python 2.7-compatible Abaqus scripts. Keep the external Python 3 controller separate. |
+
+Probe the executables, runtime and licenses on the machine that will run the job. Record actual versions. On a version change, recheck the affected adapter with a small known input. Do not copy a blanket compatibility claim from another skill or site.
+
+Before running an Abaqus Python script, query the chosen launcher with `abq2022 python -c "import sys; print(sys.version)"` or the equivalent for that release. Abaqus 2022 and 2023 use embedded Python 2.7. The transition to Python 3.10 started in Abaqus 2024. Adapt Python 3 templates and ODB helpers to the installed release before reuse. Run independent INP and data tools with the external Python 3 interpreter.
+
+Before the affected stage, record these items in the case file:
+
+| Area | Required information |
+| --- | --- |
+| Specimen | TPMS family/equation, sheet definition, unit-cell pitch and phase, coordinate system, envelope, thickness or target relative density and calibration method, twist law if applicable. |
+| Mesh | nTop surface extraction, triangle remesh and tetra settings; HyperMesh target element type; applicable size, quality and geometry criteria. |
+| Material | Density, elastic law and any plasticity/damage data, curve convention, source, and conversions. State the unit system; for mm/N/s use tonne and MPa, with N·mm of energy equal to 0.001 J. |
+| Assembly | Compression axis and sign, plate geometry and clearance, reference points, restraints, contact scope and friction. |
+| Loading | Initial height or gauge length for strain, target stroke or strain, step time/rate and amplitude, mass scaling if specified, field/history outputs and restart interval. Distinguish plate travel from specimen shortening if there is a gap. |
+| Execution and acceptance | Mode, unique job name, folders, CPU and parallel mode, requested outputs and the checks used to judge the result. Verify actual available CPUs, license, and space before submission. |
+
+## nTopology: native solid and linear mesh
+
+- Prefer an editable notebook with explicit inputs for the required TPMS family and specimen. Run a copy using nTopCL. For a notebook prepared with Automate inputs, use `ntopcl --license <configured-lic-file> -j <inputs.json> -o <outputs.json> <case.ntop>` with the local version's supported options. Use a configured license reference without logging its contents; verify exit and output evidence. For an embedded export path, retarget the copy before running. Do not let it overwrite a source case. Leave `--trustnotebook` unset; this route needs no `Run Command` blocks.
+- With the user's reference mesh recipe, use `Mesh from Implicit Body` (0.5 mm tolerance; Sharpen and Simplify off), `Remesh Surface` (triangles, 0.9 mm edge, 60° span and feature angles, 1.1 growth, 0.1 mm minimum edge, 0.2 mm minimum feature), `Robust Tetrahedral Mesh` (0.5 mm edge and regularity 10), `FE Volume Mesh` (Linear), then `Export FE Mesh` (mm). Keep optional values unset as in the reference. Record any authorized overrides; the recipe alone does not guarantee adequate resolution for a different geometry.
+- Verify the notebook run and fresh `C3D4` specimen INP with nonzero nodes/elements, expected dimensions and acceptable geometry representation. Record the native solid volume and the mesh volume separately. STL, if produced for inspection, is not the geometry handoff in this workflow.
+- Verified example: `ntop/HPS180_reference_mesh.ntop` exports `ntop/HPS180_linear.inp`. The example notebook contains an embedded absolute output path. `ntop/container_592.py` can retarget a **copy** of the known 5.9.2 notebook format using a compatible cache donor. `ntop/build_hps180.py` and `ntop/add_reference_mesh.py` are HPS-specific and depend on donor notebooks. They are not a general nTop authoring API. Verify the inputs actually exposed by any notebook before relying on JSON parameters.
+
+## HyperMesh: second order and mesh evidence
+
+- Run `hmbatch -tcl <upgrade_order.tcl>` from a fresh working directory with `HPS_LINEAR_INP`, `HPS_SECOND_INP`, and `HM_COMMANFILE_DIR` set to the stage paths for the existing `ntop/upgrade_order.tcl`. The script imports in the Abaqus profile, uses `*orderchangetosecond 1 0 0`, assigns the Explicit template's `C3D10M` type, writes a model with a fixed `.hm` name in the working directory and exports the specified INP. Require the success marker `HPS_HM_EXPORT_OK` and a valid fresh deck.
+- Check unchanged specimen element count, actual `C3D10M` headers, ten distinct valid nodes per tetrahedron, shared midside-node continuity and consistent corner and edge connectivity. Inspect volume, dimensions, minimum height or the agreed quality metric, and worst elements. This batch route places midside nodes on straight edges; an order upgrade does not refit the implicit surface or refine the mesh.
+- For the straight-edged specimen meshes, run `python ntop/audit_reference_mesh.py <mesh.inp> <C3D4|C3D10M>` with the case's intended element type. It reports bounds, absolute volume, signed corner-volume checks, minimum altitude and, for C3D10M, midpoint deviations. Its relative density is hardcoded to the HPS cylinder; compute that metric using the current envelope. The audit does not prove shared edge continuity or curved-element quality. Add checks for those where relevant.
+- Verified handoff: `ntop/linear_audit.json` and `ntop/hypermesh/second_order_audit.json`; 712,999 specimen tetrahedra before and after, 1,240,722 nodes after. The HPS native solid is 19.98% of its envelope and the mesh is 19.33%. Record the discrepancy and assess it against the new case's needs rather than treating the example as a universal tolerance.
+
+## HyperMesh: zero-thickness square-mesh platens
+
+- Draw the two planar platen surfaces in HyperMesh at the case's contact planes, perpendicular to the compression axis. The dimensions and grid pitch are case inputs. Map a uniform all-quad grid with equal physical spacing in the two in-plane directions so each quad is square. Export each plate in a separate component as Abaqus/Explicit `R3D4`. No shell thickness or elastic section is needed for the rigid facets.
+- After meshing, delete the construction surfaces, edges and points while preserving the mesh. Create an independent FE node at each platen center and export named single-node sets `BOTTOM_RP` and `TOP_RP`. Verify coplanarity, grid coverage, inward normals, and exactly two non-mesh reference nodes in the exported plate file. Save the `.hm` with zero geometry entities. In Abaqus, preserve facet connectivity and bind each rigid body to its imported reference node. Check the general-contact initialization in datacheck.
+- Example implementation for Z-axis compression: [HPS180 platen Tcl](../scripts/make_platens.tcl) and [HPS180 Abaqus assembly adapter](../scripts/assemble_quad_platens.py). The example reuses the two contact planes and 50 mm plate footprint from the earlier case and uses a 2.5 mm grid for the new plates.
+
+## Abaqus: assembly, datacheck, solve and results
+
+- Assemble the **exported HyperMesh INP** as the specimen. Preserve element order and ensure that the sets, IDs and instances cannot collide with the plates. Validate material assignment, platen RPs, plate orientation and gaps, restraints, displacement sign, contact coverage (including specimen self-contact if required), and history requests for displacement and reaction at the driven RP. Include energy and mass-scaling channels applicable to the case. Write restart output for solve jobs when recovery is required.
+- Use unique names and a fresh `C:\SIMULIA\temp\<case>\<job>` directory. Run `abq2022 job=<check_name> input=<deck.inp> datacheck interactive` with the intended solver options; inspect the native log, data/status/message files as applicable, and fatal errors and warnings. A launcher exit code or an ODB file alone does not pass the gate. Record which deck and includes passed and submit the same content with `abq2022 job=<run_name> input=<deck.inp> cpus=<verified_count> ... interactive`. Record parallel mode and domains; a threaded solve need not have one process per CPU. Use a durable process launch if the job must survive the invoking session. Verify the solver on that host and observe fresh `.sta` increments.
+- Record the SHA-256 of the verified HyperMesh export and of the assembled deck plus any includes. Keep the deck and includes identical between datacheck and solve so the checked specimen and settings can be traced to the submitted job.
+- For final results, require the native successful terminal state and intended endpoint; partial ODB data must be labelled. Extract the driven RP force and displacement along the documented axis, with signs explained. If reporting absorbed work, integrate against actual displacement over the stated interval. Inspect energies (e.g. ALLKE, ALLIE, ALLAE and ETOTAL), mass change, and warnings as applicable. For quasi-static claims, evaluate against the case's criteria over the relevant stroke. Report the requested and achieved stroke, job path, ODB, data/plots, and any numerical limitations.
+- When Origin reporting is enabled, compute crashworthiness metrics from verified ODB histories in external Python, then publish the numerical worksheet, peak candidates and linked plots to a separate Origin project. Use the unscaled mass of the intended specimen for SEA. Define the IPCF search window, prominence and startup exclusion in the case record. Keep the first raw peak and the full-stroke peak separately. Save the numeric outputs before calling Origin, and reopen the OPJU to verify its data and graphs. See the [tested Origin 2026b integration](C:/HPS180_Native_Redo_20261107/README.md#吸能指标和-origin).
+- The old `scripts/write_model.py` creates a quadratic mesh from `work/tetra_linear.npz`. The paused Abaqus job uses that specimen mesh and its own case-specific launch and postprocessing scripts.
+- For the nTopology/HyperMesh mesh, see the [native HPS180 redo case](C:/HPS180_Native_Redo_20261107/README.md). Its `scripts/assemble.py` verifies shared midside nodes and corner correspondence, retains the exported mesh as an include, and adds the rigid-platen compression model. The [Abaqus 2022 datacheck](C:/HPS180_Native_Redo_20261107/results/datacheck.json) passed for this assembled deck. See the [job state](C:/HPS180_Native_Redo_20261107/results/status.json) for solve evidence.
+
+## Status, pause and recovery
+
+- For status, correlate the exact job's launcher/solver process on the execution host, native termination state and advancing `.sta` entries. Distinguish active, stopped with checkpoint, failed, and complete. A stale lock or existing ODB cannot establish a running solver.
+- Before pausing, disable any automatic retry or submission and locate a written restart interval. Use the installed release's supported job-control command for a recoverable stop, then verify exit and preserve the full restart set (including the relevant `.abq`, `.pac`, `.res`, `.sel`, `.stt`, `.mdl`, `.prt`, `.odb`, inputs and logs that the job produced). Check free space before duplicating large checkpoints. Record the last proven interval and whether a restart validation passed. A suspended live process is not a durable checkpoint; report when no recoverable interval can be verified.
+- Only resume the job specifically requested, with matched inputs, solver release and compatible restart settings. Verify its restart set and choose the documented Explicit recovery or restart procedure for the intended continuation. Confirm progress beyond the checkpoint. Never apply a restart to a changed specimen mesh or substitute a fresh run without saying so.
+- Existing hold: `PAUSED_BY_USER` at the reference root covers the earlier `HPS180_QS24` job in `C:\SIMULIA\temp\HPS180_20261106`. See `recovery/paused_20261106/恢复说明.md`. Do not clear the hold for unrelated work or use its checkpoint as evidence for a new mesh.
+
